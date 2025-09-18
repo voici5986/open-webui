@@ -1,0 +1,145 @@
+name: Sync Upstream Open WebUI
+
+on:
+  # 每天UTC时间00:00自动运行（北京时间08:00）
+  schedule:
+    - cron: '0 0 * * *'
+  
+  # 也可以手动触发
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Configure Git
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Add upstream remote and fetch
+      run: |
+        git remote add upstream https://github.com/open-webui/open-webui || true
+        git fetch upstream
+
+    - name: Check available branches
+      run: |
+        echo "=== 本地分支 ==="
+        git branch -a
+        echo "=== 上游分支 ==="
+        git ls-remote --heads upstream
+
+    - name: Detect and verify branches
+      id: detect_branches
+      run: |
+        # 获取当前分支
+        CURRENT_BRANCH=$(git branch --show-current)
+        echo "current_branch=$CURRENT_BRANCH" >> $GITHUB_OUTPUT
+        echo "当前分支: $CURRENT_BRANCH"
+        
+        # 检测上游分支（优先检查main，然后master）
+        if git ls-remote --exit-code --heads upstream main; then
+          UPSTREAM_BRANCH="main"
+        elif git ls-remote --exit-code --heads upstream master; then
+          UPSTREAM_BRANCH="master"
+        else
+          echo "❌ 错误: 无法找到上游的 main 或 master 分支"
+          echo "可用的上游分支:"
+          git ls-remote --heads upstream
+          exit 1
+        fi
+        
+        echo "upstream_branch=$UPSTREAM_BRANCH" >> $GITHUB_OUTPUT
+        echo "✅ 上游分支: $UPSTREAM_BRANCH"
+
+    - name: Check for changes
+      id: check_changes
+      run: |
+        CURRENT_BRANCH="${{ steps.detect_branches.outputs.current_branch }}"
+        UPSTREAM_BRANCH="${{ steps.detect_branches.outputs.upstream_branch }}"
+        
+        LOCAL=$(git rev-parse HEAD)
+        REMOTE=$(git rev-parse upstream/$UPSTREAM_BRANCH)
+        
+        echo "本地 $CURRENT_BRANCH 提交: $LOCAL"
+        echo "上游 $UPSTREAM_BRANCH 提交: $REMOTE"
+        
+        if [ "$LOCAL" != "$REMOTE" ]; then
+          echo "changes=true" >> $GITHUB_OUTPUT
+          echo "✅ 发现上游 Open WebUI 有新的更新"
+          
+          # 显示将要同步的提交
+          echo "=== 新提交预览 ==="
+          git log --oneline $LOCAL..$REMOTE || echo "无法显示提交差异"
+        else
+          echo "changes=false" >> $GITHUB_OUTPUT
+          echo "ℹ️  上游 Open WebUI 没有新的更新"
+        fi
+
+    - name: Merge upstream changes
+      if: steps.check_changes.outputs.changes == 'true'
+      run: |
+        CURRENT_BRANCH="${{ steps.detect_branches.outputs.current_branch }}"
+        UPSTREAM_BRANCH="${{ steps.detect_branches.outputs.upstream_branch }}"
+        
+        echo "🔄 开始合并 upstream/$UPSTREAM_BRANCH 到本地 $CURRENT_BRANCH 分支"
+        git merge upstream/$UPSTREAM_BRANCH --no-edit --allow-unrelated-histories
+        echo "✅ 合并完成"
+        
+    - name: Push changes
+      if: steps.check_changes.outputs.changes == 'true'
+      run: |
+        CURRENT_BRANCH="${{ steps.detect_branches.outputs.current_branch }}"
+        echo "📤 推送更新到 origin/$CURRENT_BRANCH"
+        git push origin $CURRENT_BRANCH
+        echo "✅ 推送完成"
+        
+    - name: Create Pull Request on conflict
+      if: failure() && steps.check_changes.outputs.changes == 'true'
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        branch: sync-upstream-openwebui-${{ github.run_number }}
+        base: ${{ steps.detect_branches.outputs.current_branch }}
+        title: "🔄 同步 Open WebUI 上游更新（有冲突）"
+        body: |
+          ## 📋 同步信息
+          
+          这是一个自动生成的PR，用于同步 Open WebUI 上游仓库的更新。
+          
+          ⚠️ **由于存在冲突，无法自动合并，请手动解决冲突后合并此PR。**
+          
+          - 上游仓库: https://github.com/open-webui/open-webui
+          - 同步分支: ${{ steps.detect_branches.outputs.current_branch }} ← upstream/${{ steps.detect_branches.outputs.upstream_branch }}
+          
+          ## 📝 更新内容
+          请查看commits了解具体更新内容。
+          
+          ## ⚠️ 注意事项
+          - 这是Open WebUI应用的更新
+          - 请检查是否有配置文件变更
+          - 请检查依赖项和环境变量变更
+          - 可能包含新的功能、UI改进或安全更新
+          - 如有自定义配置或主题，请检查是否受影响
+          - 合并前建议先在本地测试应用功能
+          - 请注意检查后端API变更是否影响前端功能
+          
+          ## 🔧 解决冲突步骤
+          1. 在本地拉取这个分支
+          2. 手动解决冲突
+          3. 测试应用功能（包括前后端交互）
+          4. 检查配置文件和环境变量
+          5. 确认所有功能正常后合并PR
+          
+        labels: |
+          sync
+          automated
+          open-webui
+          ui
